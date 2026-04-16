@@ -1,0 +1,46 @@
+{
+  "name": "dual-ai-assistant",
+  "displayName": "Dual AI Assistant",
+  "description": "Claude (cloud) + Gemma 4 (local) coding agent with sidebar panel",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dual-ai",
+          "title": "Dual AI",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "dual-ai": [
+        {
+          "type": "webview",
+          "id": "dualAI.panel",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "dualAI.sendSelection", "title": "Dual AI: Send Selection" },
+      { "command": "dualAI.fixSelection",  "title": "Dual AI: Fix This Code"  },
+      { "command": "dualAI.reloadAgents",  "title": "Dual AI: Reload Agents"  }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "dualAI.sendSelection", "when": "editorHasSelection", "group": "dualAI@1" },
+        { "command": "dualAI.fixSelection",  "when": "editorHasSelection", "group": "dualAI@2" }
+      ]
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "dotenv": "^16.0.0"
+  }
+}

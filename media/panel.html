@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Dual AI</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--vscode-font-family, sans-serif);
+    font-size:   var(--vscode-font-size, 13px);
+    color:       var(--vscode-foreground);
+    background:  var(--vscode-sideBar-background);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  #header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, #333);
+    background: var(--vscode-sideBarSectionHeader-background);
+    flex-shrink: 0;
+    gap: 6px;
+  }
+  #model-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  #clear-btn {
+    background: none;
+    border: none;
+    color: var(--vscode-foreground);
+    opacity: 0.5;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 4px;
+    flex-shrink: 0;
+  }
+  #clear-btn:hover { opacity: 1; }
+
+  /* ── Agent picker ── */
+  #agent-wrap { display: flex; align-items: center; flex: 1; min-width: 0; }
+  #agent-select {
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, #555);
+    border-radius: 3px;
+    font-size: 11px;
+    padding: 2px 4px;
+    width: 100%;
+    cursor: pointer;
+  }
+  #agent-select:focus { outline: 1px solid var(--vscode-focusBorder, #007acc); }
+
+  /* ── Sessions bar ── */
+  #sessions-bar {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, #333);
+    background: var(--vscode-sideBar-background);
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  #sessions-bar::-webkit-scrollbar { display: none; }
+
+  #tabs-list {
+    display: flex;
+    align-items: stretch;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .sess-tab {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    border: none;
+    border-right: 1px solid var(--vscode-sideBarSectionHeader-border, #333);
+    background: none;
+    color: var(--vscode-foreground);
+    opacity: 0.55;
+    white-space: nowrap;
+    max-width: 130px;
+    min-width: 60px;
+    position: relative;
+    flex-shrink: 0;
+  }
+  .sess-tab:hover { opacity: 0.85; background: var(--vscode-list-hoverBackground); }
+  .sess-tab.active {
+    opacity: 1;
+    background: var(--vscode-editor-background);
+    border-bottom: 2px solid var(--vscode-focusBorder, #007acc);
+  }
+  .sess-tab .tab-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
+  }
+  .sess-close {
+    background: none;
+    border: none;
+    color: var(--vscode-foreground);
+    opacity: 0;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    line-height: 1;
+    flex-shrink: 0;
+    border-radius: 2px;
+  }
+  .sess-tab:hover .sess-close,
+  .sess-tab.active .sess-close { opacity: 0.5; }
+  .sess-close:hover { opacity: 1 !important; background: var(--vscode-inputOption-activeBackground); }
+
+  #new-sess-btn {
+    background: none;
+    border: none;
+    color: var(--vscode-foreground);
+    opacity: 0.6;
+    cursor: pointer;
+    font-size: 18px;
+    padding: 0 10px;
+    line-height: 1;
+    flex-shrink: 0;
+    align-self: center;
+  }
+  #new-sess-btn:hover { opacity: 1; }
+
+  /* ── Messages panes ── */
+  #messages-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  .sess-pane {
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    padding: 8px 10px;
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .sess-pane.active { display: flex; }
+
+  .msg { display: flex; flex-direction: column; gap: 3px; }
+  .msg .label {
+    font-size: 10px;
+    opacity: 0.5;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .msg .bubble {
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-widget-border, #333);
+    border-radius: 6px;
+    padding: 8px 10px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.user .bubble {
+    background: var(--vscode-inputOption-activeBackground);
+    border-color: var(--vscode-focusBorder, #007acc);
+  }
+  .msg.error .bubble {
+    border-color: var(--vscode-editorError-foreground, #f44);
+    color: var(--vscode-editorError-foreground, #f44);
+  }
+
+  .bubble pre {
+    background: var(--vscode-textCodeBlock-background, #1e1e1e);
+    border-radius: 4px;
+    padding: 8px;
+    overflow-x: auto;
+    margin: 4px 0;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    white-space: pre;
+  }
+  .bubble code { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+
+  .tool-call {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    opacity: 0.7;
+    padding: 3px 0;
+  }
+  .tool-call::before { content: '⚙'; }
+
+  .cursor { display: inline-block; width: 2px; height: 1em; background: currentColor; animation: blink .7s step-end infinite; vertical-align: text-bottom; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ── Input area ── */
+  #input-area {
+    border-top: 1px solid var(--vscode-sideBarSectionHeader-border, #333);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  #input {
+    width: 100%;
+    min-height: 60px;
+    max-height: 160px;
+    resize: vertical;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, #555);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: inherit;
+    outline: none;
+  }
+  #input:focus { border-color: var(--vscode-focusBorder, #007acc); }
+
+  #toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  #hint { font-size: 11px; opacity: 0.45; }
+  #send-btn {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff);
+    border: none;
+    border-radius: 3px;
+    padding: 5px 14px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  #send-btn:hover  { background: var(--vscode-button-hoverBackground); }
+  #send-btn:disabled { opacity: 0.45; cursor: default; }
+
+  /* ── Context chip ── */
+  #ctx-chip {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px 3px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--vscode-input-border, #555);
+    background: var(--vscode-editor-background);
+    font-size: 11px;
+    color: var(--vscode-foreground);
+    opacity: 0.85;
+    user-select: none;
+  }
+  #ctx-chip.visible { display: flex; }
+  #ctx-chip.detached {
+    opacity: 0.4;
+    text-decoration: line-through;
+  }
+  #ctx-icon { font-size: 12px; flex-shrink: 0; }
+  #ctx-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+  #ctx-lines {
+    font-size: 10px;
+    opacity: 0.65;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  #ctx-detach {
+    background: none;
+    border: none;
+    color: var(--vscode-foreground);
+    opacity: 0.4;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 0 0 2px;
+    line-height: 1;
+  }
+  #ctx-detach:hover { opacity: 1; }
+
+  /* ── Model switcher ── */
+  #model-switcher {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, #555);
+    border-radius: 4px;
+    padding: 2px;
+  }
+  #model-switcher button {
+    background: none;
+    border: none;
+    color: var(--vscode-foreground);
+    opacity: 0.5;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  #model-switcher button.active {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff);
+    opacity: 1;
+  }
+  #model-switcher button:not(.active):hover { opacity: 0.85; }
+
+  /* ── Activity orb ── */
+  #activity-orb {
+    display: none;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 10px 3px 6px;
+    font-size: 11px;
+    opacity: 0.85;
+    flex-shrink: 0;
+  }
+  #activity-orb.visible { display: flex; }
+  #orb-ring {
+    position: relative;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+  .orb-dot {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--vscode-focusBorder, #007acc);
+  }
+  .orb-dot:nth-child(1) { animation: orbit1 1.4s linear infinite; }
+  .orb-dot:nth-child(2) { animation: orbit2 1.4s linear infinite; background: var(--vscode-statusBarItem-prominentBackground, #388a34); }
+  @keyframes orbit1 {
+    0%   { transform: translate(6px, 0px); }
+    25%  { transform: translate(12px, 6px); }
+    50%  { transform: translate(6px, 12px); }
+    75%  { transform: translate(0px, 6px); }
+    100% { transform: translate(6px, 0px); }
+  }
+  @keyframes orbit2 {
+    0%   { transform: translate(6px, 12px); }
+    25%  { transform: translate(0px, 6px); }
+    50%  { transform: translate(6px, 0px); }
+    75%  { transform: translate(12px, 6px); }
+    100% { transform: translate(6px, 12px); }
+  }
+  #activity-text { color: var(--vscode-foreground); opacity: 0.7; }
+
+  /* Busy indicator on tab */
+  .sess-tab.loading .tab-name::after {
+    content: ' ●';
+    font-size: 7px;
+    vertical-align: middle;
+    color: var(--vscode-focusBorder, #007acc);
+    animation: blink .7s step-end infinite;
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <span id="model-badge">Auto</span>
+  <div id="agent-wrap">
+    <select id="agent-select" title="Active agent / system prompt">
+      <option value="default">Default</option>
+    </select>
+  </div>
+  <div id="activity-orb" title="AI is working…">
+    <div id="orb-ring"><div class="orb-dot"></div><div class="orb-dot"></div></div>
+    <span id="activity-text">Thinking…</span>
+  </div>
+  <button id="clear-btn" title="Clear current session">✕ clear</button>
+</div>
+
+<div id="sessions-bar">
+  <div id="tabs-list"></div>
+  <button id="new-sess-btn" title="New session">+</button>
+</div>
+
+<div id="messages-wrap"></div>
+
+<div id="input-area">
+  <div id="ctx-chip" title="Click × to detach context for this message">
+    <span id="ctx-icon">📎</span>
+    <span id="ctx-label"></span>
+    <span id="ctx-lines"></span>
+    <button id="ctx-detach" title="Detach context">×</button>
+  </div>
+  <textarea id="input" placeholder="Ask anything… Claude edits files, Gemma answers fast." rows="3"></textarea>
+  <div id="toolbar">
+    <div id="model-switcher">
+      <button id="sw-auto"  class="active" title="Auto-route based on message">⚡ Auto</button>
+      <button id="sw-cloud" title="Always use Claude">☁ Claude</button>
+      <button id="sw-local" title="Always use local Gemma">⬡ Local</button>
+    </div>
+    <button id="send-btn">Send</button>
+  </div>
+</div>
+
+<script nonce="${nonce}">
+const vscode = acquireVsCodeApi();
+
+const inputEl     = document.getElementById('input');
+const sendBtn     = document.getElementById('send-btn');
+const badge       = document.getElementById('model-badge');
+const clearBtn    = document.getElementById('clear-btn');
+const agentSelect = document.getElementById('agent-select');
+const tabsList    = document.getElementById('tabs-list');
+const newSessBtn  = document.getElementById('new-sess-btn');
+const msgsWrap    = document.getElementById('messages-wrap');
+
+let modelMode = 'auto';
+
+// ── Activity orb ──────────────────────────────────────────────────────────
+const activityOrb  = document.getElementById('activity-orb');
+const activityText = document.getElementById('activity-text');
+const ORB_PHRASES  = [
+  'Thinking…', 'Herding tokens…', 'Churning bits…', 'Consulting the void…',
+  'Weighing neurons…', 'Untangling spaghetti…', 'Doing math…', 'Almost there…',
+  'Summoning context…', 'Hallucinating responsibly…',
+];
+let orbInterval = null;
+
+function startOrb() {
+  if (orbInterval) return;
+  let i = 0;
+  activityText.textContent = ORB_PHRASES[0];
+  activityOrb.classList.add('visible');
+  orbInterval = setInterval(() => {
+    i = (i + 1) % ORB_PHRASES.length;
+    activityText.textContent = ORB_PHRASES[i];
+  }, 2200);
+}
+
+function stopOrbIfIdle() {
+  const anyBusy = [...sessions.values()].some(s => s.pending);
+  if (!anyBusy) {
+    clearInterval(orbInterval);
+    orbInterval = null;
+    activityOrb.classList.remove('visible');
+  }
+}
+
+// ── Context chip ──────────────────────────────────────────────────────────
+const ctxChip   = document.getElementById('ctx-chip');
+const ctxIcon   = document.getElementById('ctx-icon');
+const ctxLabel  = document.getElementById('ctx-label');
+const ctxLines  = document.getElementById('ctx-lines');
+const ctxDetach = document.getElementById('ctx-detach');
+let ctxAttached = true;
+
+ctxDetach.addEventListener('click', () => {
+  ctxAttached = !ctxAttached;
+  ctxChip.classList.toggle('detached', !ctxAttached);
+  ctxDetach.textContent = ctxAttached ? '×' : '+';
+  ctxDetach.title       = ctxAttached ? 'Detach context' : 'Re-attach context';
+});
+
+function updateCtxChip(ctx) {
+  if (!ctx || !ctx.file) { ctxChip.classList.remove('visible'); return; }
+  ctxIcon.textContent  = ctx.hasSelection ? '✂' : '📄';
+  ctxLabel.textContent = ctx.file;
+  ctxLines.textContent = ctx.lines ? `· ${ctx.lines}` : '· whole file';
+  ctxChip.classList.add('visible');
+  ctxAttached = true;
+  ctxChip.classList.remove('detached');
+  ctxDetach.textContent = '×';
+  ctxDetach.title       = 'Detach context';
+}
+
+// ── Session state ─────────────────────────────────────────────────────────
+// Map<id, { name, tab, pane, firstMsg, pending, curBubble }>
+const sessions   = new Map();
+let activeSessId = null;
+
+function createSession(id, name) {
+  const tab = document.createElement('button');
+  tab.className  = 'sess-tab';
+  tab.dataset.id = id;
+  tab.innerHTML  = `<span class="tab-name">${esc(name)}</span><button class="sess-close" title="Close session">×</button>`;
+  tab.querySelector('.tab-name').addEventListener('click', () => switchSession(id));
+  tab.querySelector('.sess-close').addEventListener('click', e => { e.stopPropagation(); deleteSession(id); });
+  tabsList.appendChild(tab);
+
+  const pane = document.createElement('div');
+  pane.className = 'sess-pane';
+  msgsWrap.appendChild(pane);
+
+  sessions.set(id, { name, tab, pane, firstMsg: true, pending: false, curBubble: null });
+}
+
+function switchSession(id) {
+  if (activeSessId === id) return;
+
+  if (activeSessId && sessions.has(activeSessId)) {
+    const old = sessions.get(activeSessId);
+    old.tab.classList.remove('active');
+    old.pane.classList.remove('active');
+  }
+
+  activeSessId = id;
+  const sess = sessions.get(id);
+  sess.tab.classList.add('active');
+  sess.pane.classList.add('active');
+  sess.tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
+  // Restore input state for this session
+  const busy = sess.pending;
+  sendBtn.disabled = busy;
+  inputEl.disabled = busy;
+  if (!busy) inputEl.focus();
+
+  vscode.postMessage({ type: 'switchSession', id });
+}
+
+function deleteSession(id) {
+  if (sessions.size <= 1) {
+    const sess = sessions.get(id);
+    if (sess) { sess.pane.innerHTML = ''; sess.pending = false; sess.curBubble = null; sess.firstMsg = true; }
+    syncInputToActive();
+    vscode.postMessage({ type: 'clear' });
+    return;
+  }
+
+  const sess = sessions.get(id);
+  if (!sess) return;
+
+  const keys   = [...sessions.keys()];
+  const nextId = keys[keys.indexOf(id) + 1] ?? keys[keys.indexOf(id) - 1];
+
+  sess.tab.remove();
+  sess.pane.remove();
+  sessions.delete(id);
+  vscode.postMessage({ type: 'deleteSession', id });
+
+  if (activeSessId === id) { activeSessId = null; switchSession(nextId); }
+}
+
+function renameSession(id, name) {
+  const sess = sessions.get(id);
+  if (!sess) return;
+  sess.name = name;
+  sess.tab.querySelector('.tab-name').textContent = name;
+}
+
+function setSessionPending(id, v) {
+  const sess = sessions.get(id);
+  if (!sess) return;
+  sess.pending = v;
+  sess.tab.classList.toggle('loading', v);
+  if (id === activeSessId) syncInputToActive();
+  if (v) startOrb(); else stopOrbIfIdle();
+}
+
+function syncInputToActive() {
+  const busy = sessions.get(activeSessId)?.pending ?? false;
+  sendBtn.disabled = busy;
+  inputEl.disabled = busy;
+}
+
+// ── Pane helpers ──────────────────────────────────────────────────────────
+function addBubbleToPane(pane, role, labelText) {
+  if (!pane) return null;
+  const wrapper = document.createElement('div');
+  wrapper.className = `msg ${role}`;
+  const label  = document.createElement('div');
+  label.className   = 'label';
+  label.textContent = labelText;
+  const bubble = document.createElement('div');
+  bubble.className  = 'bubble';
+  wrapper.appendChild(label);
+  wrapper.appendChild(bubble);
+  pane.appendChild(wrapper);
+  if (pane === sessions.get(activeSessId)?.pane) pane.scrollTop = pane.scrollHeight;
+  return bubble;
+}
+
+function addToolCallToPane(pane, name, input) {
+  if (!pane) return;
+  const el = document.createElement('div');
+  el.className   = 'tool-call';
+  el.textContent = ` ${name}  ${input}`;
+  pane.appendChild(el);
+  if (pane === sessions.get(activeSessId)?.pane) pane.scrollTop = pane.scrollHeight;
+}
+
+// ── Agent picker ──────────────────────────────────────────────────────────
+agentSelect.addEventListener('change', () => vscode.postMessage({ type: 'agent', id: agentSelect.value }));
+
+// ── Model switcher ────────────────────────────────────────────────────────
+const swBtns = { auto: document.getElementById('sw-auto'), cloud: document.getElementById('sw-cloud'), local: document.getElementById('sw-local') };
+Object.entries(swBtns).forEach(([mode, btn]) => {
+  btn.addEventListener('click', () => {
+    modelMode = mode;
+    Object.values(swBtns).forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// ── New session ───────────────────────────────────────────────────────────
+newSessBtn.addEventListener('click', () => vscode.postMessage({ type: 'newSession' }));
+
+// ── Markdown renderer ─────────────────────────────────────────────────────
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function renderMarkdown(text) {
+  text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${esc(code.trimEnd())}</code></pre>`);
+  text = text.replace(/`([^`]+)`/g, (_, c) => `<code>${esc(c)}</code>`);
+  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  return text;
+}
+
+// ── Send ──────────────────────────────────────────────────────────────────
+function send() {
+  const text = inputEl.value.trim();
+  const sess = sessions.get(activeSessId);
+  if (!text || !sess || sess.pending) return;
+
+  if (sess.firstMsg) {
+    sess.firstMsg = false;
+    const label = text.slice(0, 28) + (text.length > 28 ? '…' : '');
+    renameSession(activeSessId, label);
+    vscode.postMessage({ type: 'renameSession', id: activeSessId, name: label });
+  }
+
+  const ub = addBubbleToPane(sess.pane, 'user', 'You');
+  if (ub) ub.innerHTML = renderMarkdown(text);
+
+  inputEl.value = '';
+  setSessionPending(activeSessId, true);
+
+  vscode.postMessage({ type: 'chat', text, mode: modelMode, sessionId: activeSessId, attachContext: ctxAttached });
+}
+
+// ── Extension → webview messages ─────────────────────────────────────────
+window.addEventListener('message', ev => {
+  const msg  = ev.data;
+  const sid  = msg.sessionId;
+  const sess = sid ? sessions.get(sid) : null;
+
+  switch (msg.type) {
+
+    case 'session-created':
+      createSession(msg.id, msg.name);
+      switchSession(msg.id);
+      break;
+
+    case 'model':
+      // Update badge only if this is for the active session
+      if (!sid || sid === activeSessId) {
+        badge.textContent = msg.model === 'cloud' ? '☁ Claude' : '🏠 Gemma 4';
+        badge.style.background = msg.model === 'cloud'
+          ? 'var(--vscode-statusBarItem-remoteBackground, #007acc)'
+          : 'var(--vscode-statusBarItem-prominentBackground, #388a34)';
+      }
+      break;
+
+    case 'start':
+      if (!sess) break;
+      sess.curBubble = addBubbleToPane(sess.pane, 'assistant', badge.textContent);
+      if (sess.curBubble) sess.curBubble.innerHTML = '<span class="cursor"></span>';
+      break;
+
+    case 'token':
+      if (!sess?.curBubble) break;
+      if (!sess.curBubble._raw) sess.curBubble._raw = '';
+      sess.curBubble._raw += msg.text;
+      sess.curBubble.innerHTML = renderMarkdown(sess.curBubble._raw) + '<span class="cursor"></span>';
+      if (sid === activeSessId) sess.pane.scrollTop = sess.pane.scrollHeight;
+      break;
+
+    case 'tool':
+      if (sess) addToolCallToPane(sess.pane, msg.name, msg.input);
+      break;
+
+    case 'done':
+      if (sess?.curBubble) {
+        sess.curBubble.innerHTML = renderMarkdown(sess.curBubble._raw ?? '');
+        sess.curBubble._raw = '';
+        sess.curBubble = null;
+      }
+      setSessionPending(sid, false);
+      if (!sid || sid === activeSessId) { badge.textContent = 'Auto'; badge.style.background = ''; }
+      if (sess) sess.pane.scrollTop = sess.pane.scrollHeight;
+      break;
+
+    case 'error':
+      if (sess) {
+        const eb = addBubbleToPane(sess.pane, 'error', 'Error');
+        if (eb) eb.textContent = msg.text;
+        sess.curBubble = null;
+      }
+      setSessionPending(sid, false);
+      break;
+
+    case 'agents':
+      agentSelect.innerHTML = '';
+      msg.agents.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.id; opt.textContent = a.name; opt.title = a.description || '';
+        agentSelect.appendChild(opt);
+      });
+      break;
+
+    case 'context':
+      updateCtxChip(msg.ctx);
+      break;
+
+    case 'inject':
+      inputEl.value = msg.text;
+      inputEl.focus();
+      break;
+  }
+});
+
+// ── Keyboard / button ─────────────────────────────────────────────────────
+inputEl.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+sendBtn.addEventListener('click', send);
+clearBtn.addEventListener('click', () => {
+  const sess = sessions.get(activeSessId);
+  if (!sess) return;
+  sess.pane.innerHTML = '';
+  sess.firstMsg = true;
+  renameSession(activeSessId, `Session ${[...sessions.keys()].indexOf(activeSessId) + 1}`);
+  vscode.postMessage({ type: 'clear' });
+  badge.textContent = 'Auto';
+});
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────
+vscode.postMessage({ type: 'ready' });
+</script>
+</body>
+</html>
