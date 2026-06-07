@@ -12,16 +12,22 @@ const { route }      = require('./router');
 const { runAgent }   = require('./agent');
 const { askGemma }   = require('./clients/gemma');
 const { loadAgents } = require('./agents');
+const { scan: scanPrivacy } = require('./core/privacy-scanner');
 
 const DEFAULT_SYSTEM_PROMPT =
   'You are a coding agent inside VS Code. ' +
-  'You have tools to read, write, and edit files in the workspace. ' +
+  'You have tools to read, write, and edit files in the workspace, ' +
+  'and a run_command tool to execute shell commands. ' +
   'When asked to modify code, use the tools to make changes directly — ' +
   'do not just show a diff. Be concise.';
 
+// Claude Opus 4.7 pricing per token (used for local savings estimate)
+const CLOUD_INPUT_PRICE  = 5  / 1_000_000;   // $5 per 1M input tokens
+const CLOUD_OUTPUT_PRICE = 25 / 1_000_000;   // $25 per 1M output tokens
+
 // ── Webview provider ────────────────────────────────────────────────────────
 
-class DualAIProvider {
+class MoktaProvider {
   constructor(context) {
     this._ctx          = context;
     this._view         = null;
@@ -32,8 +38,11 @@ class DualAIProvider {
     this._sessCounter  = 0;
 
     // Agents
-    this._agents       = [{ id: 'default', name: 'Default', description: 'Built-in coding agent', systemPrompt: null }];
-    this._activeAgent  = 'default';
+    this._agents      = [{ id: 'default', name: 'Default', description: 'Built-in coding agent', systemPrompt: null }];
+    this._activeAgent = 'default';
+
+    // Pending diff approvals: Map<diffId, resolve(boolean)>
+    this._pendingDiffs = new Map();
   }
 
   get _systemPrompt() {
@@ -67,7 +76,7 @@ class DualAIProvider {
     };
     webviewView.webview.html = this._buildHtml(webviewView.webview);
 
-    // Push editor context to the panel whenever selection or active file changes
+    // Push editor context whenever selection or active file changes
     const pushCtx = this._debounce(() => this._pushEditorContext(), 150);
     this._ctx.subscriptions.push(
       vscode.window.onDidChangeTextEditorSelection(pushCtx),
@@ -80,6 +89,8 @@ class DualAIProvider {
           this._pushAgents();
           if (this._sessions.size === 0) this._newSession();
           this._pushEditorContext();
+          // Restore persisted savings
+          this._pushSavedCost();
           break;
 
         case 'chat':
@@ -116,6 +127,18 @@ class DualAIProvider {
         case 'agent':
           this._activeAgent = msg.id;
           break;
+
+        // ── Diff approval ────────────────────────────────────────────
+        case 'diff-accept': {
+          const resolve = this._pendingDiffs.get(msg.id);
+          if (resolve) { resolve(true);  this._pendingDiffs.delete(msg.id); }
+          break;
+        }
+        case 'diff-reject': {
+          const resolve = this._pendingDiffs.get(msg.id);
+          if (resolve) { resolve(false); this._pendingDiffs.delete(msg.id); }
+          break;
+        }
       }
     });
   }
@@ -127,7 +150,6 @@ class DualAIProvider {
   // ── Core chat handler ────────────────────────────────────────────────
 
   async _onChat(userText, mode = 'auto', sessionId, attachContext = true) {
-    // Route to correct session (fall back to active)
     const sid  = (sessionId && this._sessions.has(sessionId)) ? sessionId : this._activeSessId;
     const sess = this._sessions.get(sid);
     if (!sess) return;
@@ -136,11 +158,44 @@ class DualAIProvider {
     const msgWithCtx = ctx ? `${userText}\n\n${ctx}` : userText;
     sess.history.push({ role: 'user', content: msgWithCtx });
 
-    const model = mode === 'cloud' ? 'cloud' : mode === 'local' ? 'local' : route(userText);
+    // ── Privacy scan ─────────────────────────────────────────────────
+    const cfg         = vscode.workspace.getConfiguration('motkra');
+    const privacyScan = cfg.get('privacyScan') ?? true;
+    let   forcedLocal = false;
+
+    if (privacyScan) {
+      const hit = scanPrivacy(msgWithCtx);
+      if (hit.hit) {
+        forcedLocal = true;
+        this._post({ type: 'privacy', label: hit.label, sessionId: sid });
+        // Log to output channel (never the content, only the pattern label)
+        this._outputChannel().appendLine(`[Motkra] Privacy: '${hit.label}' detected → forced local model`);
+      }
+    }
+
+    // ── Route ────────────────────────────────────────────────────────
+    const model = forcedLocal
+      ? 'local'
+      : mode === 'cloud' ? 'cloud'
+      : mode === 'local' ? 'local'
+      : route(userText);
+
     const s = (extra) => ({ sessionId: sid, ...extra });
 
     this._post(s({ type: 'model', model }));
     this._post(s({ type: 'start' }));
+
+    // ── Ollama options ───────────────────────────────────────────────
+    const ollamaOpts = {
+      host:  cfg.get('ollamaHost')  ?? 'localhost',
+      port:  cfg.get('ollamaPort')  ?? 11434,
+    };
+
+    // ── Tool options ─────────────────────────────────────────────────
+    const toolOpts = {
+      allowedCommands: cfg.get('allowedCommands'),
+      terminalTimeout: cfg.get('terminalTimeout'),
+    };
 
     try {
       if (model === 'cloud') {
@@ -149,18 +204,40 @@ class DualAIProvider {
           this._systemPrompt,
           (token)        => this._post(s({ type: 'token', text: token })),
           (name, input)  => this._post(s({ type: 'tool',  name, input: JSON.stringify(input) })),
-          (fullResponse) => sess.history.push({ role: 'assistant', content: fullResponse })
+          (fullResponse) => sess.history.push({ role: 'assistant', content: fullResponse }),
+          // onDiffRequest: pause tool execution, show diff in panel, wait for user
+          async (id, filePath, before, after) => {
+            this._post(s({ type: 'diff-request', id, path: filePath, before, after }));
+            return new Promise(resolve => this._pendingDiffs.set(id, resolve));
+          },
+          // onUsage: cloud tokens don't save money — no cost update needed
+          null,
+          toolOpts
         );
       } else {
-        let full = '';
-        await askGemma(
+        // ── Local (Gemma / Ollama) ───────────────────────────────────
+        let full       = '';
+        let inputChars = sess.history.reduce((acc, m) => acc + String(m.content).length, 0);
+
+        const outputTokenCount = await askGemma(
           [{ role: 'system', content: this._systemPrompt }, ...sess.history],
           (token) => {
             this._post(s({ type: 'token', text: token }));
             full += token;
-          }
+          },
+          ollamaOpts
         );
+
         sess.history.push({ role: 'assistant', content: full });
+
+        // ── Cost savings ─────────────────────────────────────────────
+        const inputTokens  = Math.ceil(inputChars / 4);
+        const outputTokens = outputTokenCount;
+        const savedNow     = (inputTokens  * CLOUD_INPUT_PRICE) +
+                             (outputTokens * CLOUD_OUTPUT_PRICE);
+        const totalSaved   = ((this._ctx.globalState.get('motkra.totalSaved') ?? 0) + savedNow);
+        this._ctx.globalState.update('motkra.totalSaved', totalSaved);
+        this._post({ type: 'cost-update', saved: totalSaved });
       }
     } catch (err) {
       this._post(s({ type: 'error', text: err.message }));
@@ -189,6 +266,18 @@ class DualAIProvider {
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────
+
+  _pushSavedCost() {
+    const total = this._ctx.globalState.get('motkra.totalSaved') ?? 0;
+    if (total > 0) this._post({ type: 'cost-update', saved: total });
+  }
+
+  _outputChannel() {
+    if (!this._channel) {
+      this._channel = vscode.window.createOutputChannel('Motkra');
+    }
+    return this._channel;
+  }
 
   _getEditorContext() {
     const ed = vscode.window.activeTextEditor;
@@ -245,10 +334,10 @@ class DualAIProvider {
 // ── Activation ──────────────────────────────────────────────────────────────
 
 function activate(context) {
-  const provider = new DualAIProvider(context);
+  const provider = new MoktaProvider(context);
 
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('dualAI.panel', provider, {
+    vscode.window.registerWebviewViewProvider('motkra.panel', provider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
@@ -266,14 +355,14 @@ function activate(context) {
   context.subscriptions.push(watcher);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('dualAI.reloadAgents', () => {
+    vscode.commands.registerCommand('motkra.reloadAgents', () => {
       provider.reloadAgents();
-      vscode.window.showInformationMessage('Dual AI: agents reloaded.');
+      vscode.window.showInformationMessage('Motkra: agents reloaded.');
     })
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('dualAI.sendSelection', () => {
+    vscode.commands.registerCommand('motkra.sendSelection', () => {
       const sel = vscode.window.activeTextEditor?.document.getText(
         vscode.window.activeTextEditor.selection
       );
@@ -282,7 +371,7 @@ function activate(context) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('dualAI.fixSelection', () => {
+    vscode.commands.registerCommand('motkra.fixSelection', () => {
       const ed  = vscode.window.activeTextEditor;
       const sel = ed?.document.getText(ed.selection);
       if (sel?.trim()) provider.inject(`Fix this code (edit the file directly):\n\`\`\`\n${sel}\n\`\`\``);

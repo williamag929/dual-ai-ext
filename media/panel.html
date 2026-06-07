@@ -5,7 +5,7 @@
 <meta http-equiv="Content-Security-Policy"
   content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Dual AI</title>
+<title>Motkra</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -372,6 +372,110 @@
     color: var(--vscode-focusBorder, #007acc);
     animation: blink .7s step-end infinite;
   }
+
+  /* ── Cost & privacy badges ── */
+  #cost-badge {
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background: #2d6a2d;
+    color: #9fdf9f;
+    white-space: nowrap;
+    display: none;
+    cursor: default;
+    flex-shrink: 0;
+  }
+  #cost-badge.visible { display: inline-block; }
+
+  #privacy-badge {
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background: #5a3a00;
+    color: #ffd580;
+    white-space: nowrap;
+    display: none;
+    flex-shrink: 0;
+  }
+  #privacy-badge.visible { display: inline-block; }
+
+  /* ── Diff overlay ── */
+  #diff-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: var(--vscode-editor-background);
+    z-index: 50;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #diff-overlay.visible { display: flex; }
+
+  #diff-header {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, #333);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+    background: var(--vscode-sideBarSectionHeader-background);
+  }
+  #diff-label {
+    font-size: 11px;
+    font-weight: bold;
+    opacity: 0.8;
+    flex-shrink: 0;
+  }
+  #diff-path {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    opacity: 0.65;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  #diff-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  #diff-reject {
+    background: #6e1f1f;
+    color: #ffb3b3;
+    border: none;
+    border-radius: 3px;
+    padding: 4px 12px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  #diff-reject:hover { background: #8a2828; }
+  #diff-accept {
+    background: #1f5c2e;
+    color: #9fdf9f;
+    border: none;
+    border-radius: 3px;
+    padding: 4px 12px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  #diff-accept:hover { background: #286e3a; }
+
+  #diff-body {
+    flex: 1;
+    overflow-y: auto;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 4px 0;
+  }
+  .diff-line {
+    padding: 0 14px;
+    white-space: pre;
+    display: block;
+    tab-size: 2;
+  }
+  .diff-line.removed { background: rgba(255, 80, 80, 0.12); color: #ff8080; }
+  .diff-line.added   { background: rgba(80, 200, 80, 0.12); color: #80e080; }
+  .diff-line.context { opacity: 0.4; }
+  .diff-line.ellipsis { opacity: 0.35; font-style: italic; padding-left: 8px; }
 </style>
 </head>
 <body>
@@ -383,6 +487,8 @@
       <option value="default">Default</option>
     </select>
   </div>
+  <span id="privacy-badge" title="Sensitive content detected — routed to local model">🔒 Private</span>
+  <span id="cost-badge" title="Estimated cloud API cost saved by routing to local model">💰 $0.00 saved</span>
   <div id="activity-orb" title="AI is working…">
     <div id="orb-ring"><div class="orb-dot"></div><div class="orb-dot"></div></div>
     <span id="activity-text">Thinking…</span>
@@ -395,7 +501,20 @@
   <button id="new-sess-btn" title="New session">+</button>
 </div>
 
-<div id="messages-wrap"></div>
+<div id="messages-wrap">
+  <!-- Diff approval overlay — shown when Claude wants to edit a file -->
+  <div id="diff-overlay">
+    <div id="diff-header">
+      <span id="diff-label">Review change</span>
+      <span id="diff-path"></span>
+      <div id="diff-actions">
+        <button id="diff-reject">✗ Reject</button>
+        <button id="diff-accept">✓ Accept</button>
+      </div>
+    </div>
+    <div id="diff-body"></div>
+  </div>
+</div>
 
 <div id="input-area">
   <div id="ctx-chip" title="Click × to detach context for this message">
@@ -426,6 +545,95 @@ const agentSelect = document.getElementById('agent-select');
 const tabsList    = document.getElementById('tabs-list');
 const newSessBtn  = document.getElementById('new-sess-btn');
 const msgsWrap    = document.getElementById('messages-wrap');
+const costBadge   = document.getElementById('cost-badge');
+const privBadge   = document.getElementById('privacy-badge');
+
+// ── Diff overlay ──────────────────────────────────────────────────────────
+const diffOverlay = document.getElementById('diff-overlay');
+const diffPath    = document.getElementById('diff-path');
+const diffBody    = document.getElementById('diff-body');
+const diffAccept  = document.getElementById('diff-accept');
+const diffReject  = document.getElementById('diff-reject');
+let   currentDiffId    = null;
+let   privacyHideTimer = null;
+
+/** LCS-based line diff. Returns [{type:'context'|'removed'|'added', text}] */
+function lineDiff(oldLines, newLines) {
+  const m = oldLines.length, n = newLines.length;
+  // dp[i][j] = LCS length for oldLines[i..] vs newLines[j..]
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = oldLines[i] === newLines[j]
+        ? 1 + dp[i + 1][j + 1]
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const result = [];
+  let i = 0, j = 0;
+  while (i < m || j < n) {
+    if (i < m && j < n && oldLines[i] === newLines[j]) {
+      result.push({ type: 'context', text: oldLines[i++] });
+      j++;
+    } else if (j < n && (i >= m || dp[i][j + 1] >= dp[i + 1][j])) {
+      result.push({ type: 'added',   text: newLines[j++] });
+    } else {
+      result.push({ type: 'removed', text: oldLines[i++] });
+    }
+  }
+  return result;
+}
+
+/** Collapse unchanged context lines far from edits (keep ±3 around changes). */
+function collapseContext(lines) {
+  const CTX = 3;
+  const near = new Set();
+  lines.forEach((l, i) => {
+    if (l.type !== 'context') {
+      for (let k = Math.max(0, i - CTX); k <= Math.min(lines.length - 1, i + CTX); k++) near.add(k);
+    }
+  });
+  const out = [];
+  let skipped = 0;
+  lines.forEach((l, i) => {
+    if (!near.has(i)) { skipped++; return; }
+    if (skipped) { out.push({ type: 'ellipsis', text: `↕ ${skipped} unchanged lines` }); skipped = 0; }
+    out.push(l);
+  });
+  if (skipped) out.push({ type: 'ellipsis', text: `↕ ${skipped} unchanged lines` });
+  return out;
+}
+
+function showDiff(id, filePath, before, after) {
+  currentDiffId = id;
+  diffPath.textContent = filePath;
+  diffBody.innerHTML = '';
+
+  const diff = collapseContext(lineDiff(before.split('\n'), after.split('\n')));
+  for (const { type, text } of diff) {
+    const el = document.createElement('span');
+    el.className = `diff-line ${type}`;
+    el.textContent = type === 'removed' ? `- ${text}`
+                   : type === 'added'   ? `+ ${text}`
+                   :                      `  ${text}`;
+    diffBody.appendChild(el);
+  }
+
+  diffOverlay.classList.add('visible');
+}
+
+diffAccept.addEventListener('click', () => {
+  if (!currentDiffId) return;
+  vscode.postMessage({ type: 'diff-accept', id: currentDiffId });
+  diffOverlay.classList.remove('visible');
+  currentDiffId = null;
+});
+diffReject.addEventListener('click', () => {
+  if (!currentDiffId) return;
+  vscode.postMessage({ type: 'diff-reject', id: currentDiffId });
+  diffOverlay.classList.remove('visible');
+  currentDiffId = null;
+});
 
 let modelMode = 'auto';
 
@@ -727,6 +935,21 @@ window.addEventListener('message', ev => {
     case 'inject':
       inputEl.value = msg.text;
       inputEl.focus();
+      break;
+
+    case 'diff-request':
+      showDiff(msg.id, msg.path, msg.before, msg.after);
+      break;
+
+    case 'cost-update':
+      costBadge.textContent = `💰 $${msg.saved.toFixed(2)} saved`;
+      costBadge.classList.add('visible');
+      break;
+
+    case 'privacy':
+      privBadge.classList.add('visible');
+      clearTimeout(privacyHideTimer);
+      privacyHideTimer = setTimeout(() => privBadge.classList.remove('visible'), 6000);
       break;
   }
 });

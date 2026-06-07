@@ -1,4 +1,4 @@
-# Dual AI Assistant — VS Code Extension
+# Motkra — VS Code Extension
 
 A VS Code sidebar extension that combines **Claude** (cloud, agentic) and **Gemma 4** (local, fast) in a single chat panel — like GitHub Copilot but with two models and direct file editing.
 
@@ -90,7 +90,7 @@ ollama pull gemma4:e2b  # download model (first time only)
 
 2. Press **F5** — this opens an **Extension Development Host** window.
 
-3. In the new window, click the **two-circles icon** in the Activity Bar to open the **Dual AI** panel.
+3. In the new window, click the **two-circles icon** in the Activity Bar to open the **Motkra** panel.
 
 > The extension reloads automatically when you save changes to source files.
 
@@ -138,8 +138,8 @@ Select any code in the editor, right-click, and choose:
 
 | Command | What it does |
 |---|---|
-| **Dual AI: Send Selection** | Sends selection to the panel with "Explain this code:" |
-| **Dual AI: Fix This Code** | Sends selection with "Fix this code (edit the file directly):" |
+| **Motkra: Send Selection** | Sends selection to the panel with "Explain this code:" |
+| **Motkra: Fix This Code** | Sends selection with "Fix this code (edit the file directly):" |
 
 ---
 
@@ -182,7 +182,7 @@ The file is edited on disk immediately. VS Code will show the standard "file cha
 
 | Role | Model ID | Notes |
 |---|---|---|
-| Cloud agent | `claude-opus-4-6` | Adaptive thinking + prompt caching enabled |
+| Cloud agent | `claude-opus-4-7` | Adaptive thinking + xhigh effort + prompt caching |
 | Local chat | `gemma4:e2b` | Runs via Ollama on localhost:11434 |
 
 ---

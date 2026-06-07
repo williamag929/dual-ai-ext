@@ -1,7 +1,7 @@
 {
-  "name": "dual-ai-assistant",
-  "displayName": "Dual AI Assistant",
-  "description": "Claude (cloud) + Gemma 4 (local) coding agent with sidebar panel",
+  "name": "motkra",
+  "displayName": "Motkra",
+  "description": "Privacy-first AI coding agent — Claude (cloud) + any local model via Ollama",
   "version": "0.1.0",
   "publisher": "local",
   "engines": { "vscode": "^1.80.0" },
@@ -12,31 +12,75 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "dual-ai",
-          "title": "Dual AI",
+          "id": "motkra",
+          "title": "Motkra",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "dual-ai": [
+      "motkra": [
         {
           "type": "webview",
-          "id": "dualAI.panel",
+          "id": "motkra.panel",
           "name": "Chat"
         }
       ]
     },
     "commands": [
-      { "command": "dualAI.sendSelection", "title": "Dual AI: Send Selection" },
-      { "command": "dualAI.fixSelection",  "title": "Dual AI: Fix This Code"  },
-      { "command": "dualAI.reloadAgents",  "title": "Dual AI: Reload Agents"  }
+      { "command": "motkra.sendSelection", "title": "Motkra: Send Selection" },
+      { "command": "motkra.fixSelection",  "title": "Motkra: Fix This Code"  },
+      { "command": "motkra.reloadAgents",  "title": "Motkra: Reload Agents"  }
+    ],
+    "keybindings": [
+      {
+        "command": "workbench.view.extension.motkra",
+        "key": "ctrl+shift+j",
+        "mac": "cmd+shift+j",
+        "when": "!motkra.panelFocused"
+      }
     ],
     "menus": {
       "editor/context": [
-        { "command": "dualAI.sendSelection", "when": "editorHasSelection", "group": "dualAI@1" },
-        { "command": "dualAI.fixSelection",  "when": "editorHasSelection", "group": "dualAI@2" }
+        { "command": "motkra.sendSelection", "when": "editorHasSelection", "group": "motkra@1" },
+        { "command": "motkra.fixSelection",  "when": "editorHasSelection", "group": "motkra@2" }
       ]
+    },
+    "configuration": {
+      "title": "Motkra",
+      "properties": {
+        "motkra.claudeModel": {
+          "type": "string",
+          "default": "claude-opus-4-7",
+          "description": "Anthropic model ID used for cloud requests."
+        },
+        "motkra.ollamaHost": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Hostname where Ollama is running."
+        },
+        "motkra.ollamaPort": {
+          "type": "number",
+          "default": 11434,
+          "description": "Port where Ollama is listening."
+        },
+        "motkra.privacyScan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan messages for secrets/credentials and force local model if found."
+        },
+        "motkra.terminalTimeout": {
+          "type": "number",
+          "default": 30,
+          "description": "Timeout in seconds for the run_command agent tool."
+        },
+        "motkra.allowedCommands": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["npm", "npx", "python", "python3", "pytest", "git", "node"],
+          "description": "Executables the terminal tool is allowed to run."
+        }
+      }
     }
   },
   "dependencies": {
